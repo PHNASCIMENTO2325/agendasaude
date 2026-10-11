@@ -1,7 +1,5 @@
 # AgendaSaúde
 
-TODAS AS EVIDÊNCIAS DE TESTES ESTÃO NA PASTA "EVIDÊNCIAS".
-
 API REST para **agendamento de consultas em unidades de saúde**.
 Projeto da disciplina **Eletiva IV: Projeto Multidisciplinar de Análise e Desenvolvimento de Sistemas** (UNINTER - Escola Superior Politécnica).
 
