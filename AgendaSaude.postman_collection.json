@@ -1,0 +1,205 @@
+{
+  "info": {
+    "name": "AgendaSaude API",
+    "description": "Colecao de testes da API AgendaSaude. Rode a pasta inteira (Collection Runner) com o banco populado por `npm run db:init`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "token", "value": "" },
+    { "key": "tokenAdmin", "value": "" },
+    { "key": "slotId", "value": "" },
+    { "key": "slotId2", "value": "" },
+    { "key": "consultaId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "01 - Health check",
+      "request": { "method": "GET", "url": "{{baseUrl}}/health" },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('API no ar (200)', function () { pm.response.to.have.status(200); });"
+      ] } }]
+    },
+    {
+      "name": "02 - Cadastro sem consentimento LGPD (CT07)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/auth/register",
+        "body": { "mode": "raw", "raw": "{\n  \"nome\": \"Teste Sem Consentimento\",\n  \"email\": \"semconsentimento@email.com\",\n  \"senha\": \"Senha@1234\",\n  \"cpf\": \"98765432100\",\n  \"consentimentoLGPD\": false\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Cadastro bloqueado (400)', function () { pm.response.to.have.status(400); });"
+      ] } }]
+    },
+    {
+      "name": "03 - Login do paciente",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/auth/login",
+        "body": { "mode": "raw", "raw": "{\n  \"email\": \"paciente@email.com\",\n  \"senha\": \"Paciente@123\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Login OK (200)', function () { pm.response.to.have.status(200); });",
+        "var json = pm.response.json();",
+        "pm.test('Retorna token JWT', function () { pm.expect(json.token).to.be.a('string'); });",
+        "pm.collectionVariables.set('token', json.token);"
+      ] } }]
+    },
+    {
+      "name": "04 - Login com senha errada",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/auth/login",
+        "body": { "mode": "raw", "raw": "{\n  \"email\": \"paciente@email.com\",\n  \"senha\": \"senhaerrada\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Credenciais invalidas (401)', function () { pm.response.to.have.status(401); });"
+      ] } }]
+    },
+    {
+      "name": "05 - Listar horarios livres",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": { "raw": "{{baseUrl}}/horarios?especialidade=Clinica Geral", "host": ["{{baseUrl}}"], "path": ["horarios"], "query": [{ "key": "especialidade", "value": "Clinica Geral" }] }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Lista de horarios (200)', function () { pm.response.to.have.status(200); });",
+        "var horarios = pm.response.json();",
+        "pm.test('Ha ao menos 2 horarios livres', function () { pm.expect(horarios.length).to.be.at.least(2); });",
+        "pm.collectionVariables.set('slotId', horarios[0].id);",
+        "pm.collectionVariables.set('slotId2', horarios[1].id);"
+      ] } }]
+    },
+    {
+      "name": "06 - Agendar sem token (CT03)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/consultas",
+        "body": { "mode": "raw", "raw": "{\n  \"slotId\": \"{{slotId}}\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Nao autenticado (401)', function () { pm.response.to.have.status(401); });"
+      ] } }]
+    },
+    {
+      "name": "07 - Agendar consulta (CT01)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": "{{baseUrl}}/consultas",
+        "body": { "mode": "raw", "raw": "{\n  \"slotId\": \"{{slotId}}\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Consulta criada (201)', function () { pm.response.to.have.status(201); });",
+        "var json = pm.response.json();",
+        "pm.test('Status CONFIRMADA', function () { pm.expect(json.status).to.eql('CONFIRMADA'); });",
+        "pm.collectionVariables.set('consultaId', json.consultaId);"
+      ] } }]
+    },
+    {
+      "name": "08 - Agendar o mesmo horario novamente (conflito)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": "{{baseUrl}}/consultas",
+        "body": { "mode": "raw", "raw": "{\n  \"slotId\": \"{{slotId}}\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Horario indisponivel (409)', function () { pm.response.to.have.status(409); });"
+      ] } }]
+    },
+    {
+      "name": "09 - Historico do paciente",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{baseUrl}}/pacientes/me/consultas"
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Historico (200)', function () { pm.response.to.have.status(200); });",
+        "pm.test('Contem a consulta criada', function () {",
+        "  var ids = pm.response.json().map(function (c) { return c.id; });",
+        "  pm.expect(ids).to.include(pm.collectionVariables.get('consultaId'));",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "10 - Remarcar consulta",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": "{{baseUrl}}/consultas/{{consultaId}}",
+        "body": { "mode": "raw", "raw": "{\n  \"acao\": \"REMARCAR\",\n  \"novoSlotId\": \"{{slotId2}}\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Remarcada (200)', function () { pm.response.to.have.status(200); });"
+      ] } }]
+    },
+    {
+      "name": "11 - Cancelar consulta (CT04)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": "{{baseUrl}}/consultas/{{consultaId}}",
+        "body": { "mode": "raw", "raw": "{\n  \"acao\": \"CANCELAR\",\n  \"motivo\": \"Teste via Postman\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Cancelada (200)', function () { pm.response.to.have.status(200); });",
+        "pm.test('Status CANCELADA', function () { pm.expect(pm.response.json().status).to.eql('CANCELADA'); });"
+      ] } }]
+    },
+    {
+      "name": "12 - Login do administrador",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/auth/login",
+        "body": { "mode": "raw", "raw": "{\n  \"email\": \"admin@agendasaude.com\",\n  \"senha\": \"Admin@123\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Login admin OK (200)', function () { pm.response.to.have.status(200); });",
+        "pm.collectionVariables.set('tokenAdmin', pm.response.json().token);"
+      ] } }]
+    },
+    {
+      "name": "13 - Relatorio de ocupacao (administrador)",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{tokenAdmin}}" }],
+        "url": "{{baseUrl}}/relatorios/ocupacao"
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Relatorio gerado (200)', function () { pm.response.to.have.status(200); });",
+        "pm.test('Tem taxa de ocupacao', function () { pm.expect(pm.response.json()).to.have.property('taxaOcupacaoPercentual'); });"
+      ] } }]
+    },
+    {
+      "name": "14 - Relatorio com perfil paciente (negado)",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{baseUrl}}/relatorios/ocupacao"
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('Acesso negado (403)', function () { pm.response.to.have.status(403); });"
+      ] } }]
+    }
+  ]
+}

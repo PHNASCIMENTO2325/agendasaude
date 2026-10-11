@@ -1,0 +1,380 @@
+openapi: 3.0.3
+info:
+  title: AgendaSaude API
+  version: 1.0.0
+  description: |
+    API REST do sistema AgendaSaude (agendamento de consultas em unidades de saude).
+    Projeto da disciplina Eletiva IV - Projeto Multidisciplinar de Analise e Desenvolvimento de Sistemas.
+    Autenticacao por token JWT (Bearer) com expiracao de 30 minutos.
+servers:
+  - url: http://localhost:3000
+    description: Ambiente local
+tags:
+  - name: Autenticacao
+  - name: Horarios
+  - name: Consultas
+  - name: Pacientes
+  - name: Relatorios
+paths:
+  /health:
+    get:
+      summary: Verifica se a API esta no ar
+      responses:
+        '200':
+          description: API operante
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+  /auth/register:
+    post:
+      tags: [Autenticacao]
+      summary: Cadastra um paciente (exige consentimento LGPD)
+      description: RF01. Sem `consentimentoLGPD = true` o cadastro e bloqueado (CT07).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistroPaciente'
+      responses:
+        '201':
+          description: Paciente cadastrado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+        '400':
+          description: Dados invalidos ou consentimento ausente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '409':
+          description: E-mail ou CPF ja cadastrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+  /auth/login:
+    post:
+      tags: [Autenticacao]
+      summary: Autentica o usuario e retorna o token JWT
+      description: RF02.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, senha]
+              properties:
+                email: { type: string, format: email, example: paciente@email.com }
+                senha: { type: string, format: password, example: Paciente@123 }
+      responses:
+        '200':
+          description: Autenticado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  tipo: { type: string, example: Bearer }
+                  expiraEmSegundos: { type: integer, example: 1800 }
+                  perfil: { type: string, enum: [PACIENTE, PROFISSIONAL, ADMINISTRADOR] }
+        '400':
+          description: E-mail ou senha nao informados
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '401':
+          description: Credenciais invalidas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+  /horarios:
+    get:
+      tags: [Horarios]
+      summary: Lista horarios livres
+      description: RF03. Filtra por especialidade, unidade e data.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: especialidade
+          schema: { type: string, example: Clinica Geral }
+        - in: query
+          name: unidade
+          schema: { type: string, format: uuid }
+        - in: query
+          name: data
+          schema: { type: string, format: date, example: '2026-10-15' }
+      responses:
+        '200':
+          description: Lista de horarios livres
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Horario' }
+        '400':
+          description: Parametro invalido
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '401':
+          description: Nao autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+  /consultas:
+    post:
+      tags: [Consultas]
+      summary: Agenda uma consulta (reserva transacional)
+      description: |
+        RF04, RN01 e RN02. A reserva usa transacao com bloqueio de linha (`FOR UPDATE`):
+        em requisicoes concorrentes para o mesmo horario, apenas uma retorna 201 e as demais 409 (CT02).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slotId]
+              properties:
+                slotId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Consulta confirmada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  consultaId: { type: string, format: uuid }
+                  status: { type: string, example: CONFIRMADA }
+                  inicio: { type: string, format: date-time }
+        '400':
+          description: slotId invalido
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '401':
+          description: Nao autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '403':
+          description: Perfil sem permissao (apenas paciente)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '404':
+          description: Horario inexistente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '409':
+          description: Horario indisponivel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '422':
+          description: Limite de consultas ativas na especialidade (RN02)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+  /consultas/{id}:
+    patch:
+      tags: [Consultas]
+      summary: Cancela ou remarca uma consulta
+      description: |
+        RF05 e RN03. Exige antecedencia minima (padrao 2 horas, variavel `MIN_ANTECEDENCIA_HORAS`).
+        Ao cancelar, o horario volta a ficar livre (CT04). Fora do prazo a operacao e negada (CT05).
+        Alterar a consulta de outro paciente retorna 403 e gera registro de auditoria (CT06).
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [acao]
+              properties:
+                acao: { type: string, enum: [CANCELAR, REMARCAR] }
+                motivo: { type: string, example: Imprevisto no trabalho }
+                novoSlotId:
+                  type: string
+                  format: uuid
+                  description: Obrigatorio quando acao = REMARCAR
+      responses:
+        '200':
+          description: Consulta atualizada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, example: CANCELADA }
+        '400':
+          description: Requisicao invalida
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '401':
+          description: Nao autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '403':
+          description: Consulta pertence a outro paciente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '404':
+          description: Consulta ou novo horario nao encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '409':
+          description: Consulta nao pode mais ser alterada ou novo horario indisponivel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '422':
+          description: Fora do prazo de antecedencia minima
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+  /pacientes/me/consultas:
+    get:
+      tags: [Pacientes]
+      summary: Historico e proximas consultas do paciente autenticado
+      description: RF06. O acesso e registrado na trilha de auditoria.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Lista de consultas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ConsultaResumo' }
+        '401':
+          description: Nao autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '403':
+          description: Perfil sem permissao
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+  /relatorios/ocupacao:
+    get:
+      tags: [Relatorios]
+      summary: Relatorio de ocupacao da agenda (administrador)
+      description: RF11.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: inicio
+          schema: { type: string, format: date }
+        - in: query
+          name: fim
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Relatorio gerado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RelatorioOcupacao' }
+        '400':
+          description: Datas invalidas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '401':
+          description: Nao autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '403':
+          description: Perfil sem permissao
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Erro:
+      type: object
+      properties:
+        erro: { type: string }
+    RegistroPaciente:
+      type: object
+      required: [nome, email, senha, cpf, consentimentoLGPD]
+      properties:
+        nome: { type: string, example: Maria da Silva }
+        email: { type: string, format: email, example: maria@email.com }
+        senha: { type: string, format: password, minLength: 8, example: Senha@1234 }
+        cpf: { type: string, example: '12345678909' }
+        dataNascimento: { type: string, format: date, example: '1990-03-15' }
+        telefone: { type: string, example: '11988887777' }
+        consentimentoLGPD:
+          type: boolean
+          description: Deve ser true (aceite da Politica de Privacidade)
+    Horario:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        inicio: { type: string, format: date-time }
+        especialidade: { type: string }
+        profissional: { type: string }
+        unidade_id: { type: string, format: uuid }
+        unidade: { type: string }
+    ConsultaResumo:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [PENDENTE, CONFIRMADA, CANCELADA, REALIZADA, FALTOU] }
+        inicio: { type: string, format: date-time }
+        especialidade: { type: string }
+        profissional: { type: string }
+        unidade: { type: string }
+    RelatorioOcupacao:
+      type: object
+      properties:
+        periodo:
+          type: object
+          properties:
+            inicio: { type: string, format: date }
+            fim: { type: string, format: date }
+        totalHorarios: { type: integer }
+        horariosOcupados: { type: integer }
+        taxaOcupacaoPercentual: { type: number }
+        consultasPorStatus:
+          type: array
+          items:
+            type: object
+            properties:
+              status: { type: string }
+              quantidade: { type: integer }

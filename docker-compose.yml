@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    container_name: agendasaude-db
+    environment:
+      POSTGRES_USER: agenda
+      POSTGRES_PASSWORD: agenda123
+      POSTGRES_DB: agendasaude
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql
+volumes:
+  pgdata:
